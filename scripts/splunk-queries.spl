@@ -1,0 +1,216 @@
+# ServiceNow to Splunk - Essential Queries Collection
+
+# =====================================
+# DATA VALIDATION QUERIES
+# =====================================
+
+# Basic data verification - Check if data is flowing
+index=main sourcetype="snow:incident" 
+| head 10
+| table _time, dv_number, short_description, dv_state, dv_priority
+
+# Field extraction validation - Verify all key fields are extracted
+index=main sourcetype="snow:incident"
+| eval missing_fields = if(isnull(dv_number), "number ", "") + 
+                       if(isnull(short_description), "description ", "") +
+                       if(isnull(dv_state), "state ", "") +
+                       if(isnull(dv_priority), "priority ", "")
+| where missing_fields != ""
+| table dv_number, missing_fields
+
+# Data completeness check - Count records by collection time
+index=main sourcetype="snow:incident"
+| eval collection_hour = strftime(_time, "%Y-%m-%d %H:00")
+| stats count by collection_hour
+| sort collection_hour
+
+# =====================================
+# HEALTH MONITORING QUERIES  
+# =====================================
+
+# Collection status monitoring - Track successful data collections
+index=_internal source=*servicenow* "Data collection completed"
+| rex field=_raw "Got a total of (?<record_count>\d+) records"
+| eval collection_time = strftime(_time, "%Y-%m-%d %H:%M:%S")
+| table collection_time, record_count
+| sort -_time
+
+# Error detection - Find collection errors and warnings
+index=_internal source=*servicenow* (ERROR OR WARN)
+| rex field=_raw "(?<log_level>ERROR|WARN)\s+(?<component>\w+)\s+-\s+(?<error_message>.*)"
+| table _time, log_level, component, error_message
+| sort -_time
+
+# API response time monitoring - Track ServiceNow API performance
+index=_internal source=*servicenow* "response time"
+| rex field=_raw "response time:\s+(?<response_time_ms>\d+)"
+| eval response_time_sec = response_time_ms/1000
+| timechart avg(response_time_sec) as avg_response_time
+
+# Connection health check - Monitor authentication success/failure
+index=_internal source=*servicenow* ("authentication" OR "connection")
+| eval status = case(
+    match(_raw, "success|successful"), "Success",
+    match(_raw, "fail|error|timeout"), "Failed",
+    1==1, "Unknown"
+)
+| timechart count by status
+
+# =====================================
+# BUSINESS ANALYTICS QUERIES
+# =====================================
+
+# Incident volume trends - Track incident creation over time
+index=main sourcetype="snow:incident"
+| timechart span=1d count as incident_count
+
+# Priority distribution - Analyze incident priorities
+index=main sourcetype="snow:incident"
+| stats count by dv_priority
+| eval priority_name = case(
+    dv_priority=="1", "Critical",
+    dv_priority=="2", "High", 
+    dv_priority=="3", "Moderate",
+    dv_priority=="4", "Low",
+    1==1, "Unknown"
+)
+| sort dv_priority
+
+# Assignment group workload - Top groups by incident count
+index=main sourcetype="snow:incident"
+| stats count as incident_count by dv_assignment_group
+| sort -incident_count
+| head 10
+
+# State distribution - Current incident states
+index=main sourcetype="snow:incident"
+| stats count by dv_state
+| eval state_name = case(
+    dv_state=="1", "New",
+    dv_state=="2", "In Progress",
+    dv_state=="6", "Resolved",
+    dv_state=="7", "Closed",
+    1==1, "Other"
+)
+| sort dv_state
+
+# High priority incidents - Critical and high priority monitoring
+index=main sourcetype="snow:incident" (dv_priority="1" OR dv_priority="2")
+| eval priority_text = if(dv_priority="1", "Critical", "High")
+| table _time, dv_number, short_description, priority_text, dv_assignment_group, dv_state
+| sort -_time
+
+# =====================================
+# PERFORMANCE ANALYTICS
+# =====================================
+
+# Incident age analysis - How long incidents remain open
+index=main sourcetype="snow:incident" dv_state!=7
+| eval opened_epoch = strptime(dv_opened_at, "%Y-%m-%d %H:%M:%S")
+| eval age_days = round((now() - opened_epoch) / 86400, 1)
+| stats avg(age_days) as avg_age_days, 
+        max(age_days) as max_age_days,
+        count as open_incidents 
+  by dv_assignment_group
+| sort -avg_age_days
+
+# Resolution time analysis - Time to resolve incidents
+index=main sourcetype="snow:incident" dv_state=6 OR dv_state=7
+| eval opened_epoch = strptime(dv_opened_at, "%Y-%m-%d %H:%M:%S")
+| eval resolved_epoch = strptime(dv_resolved_at, "%Y-%m-%d %H:%M:%S")
+| eval resolution_hours = round((resolved_epoch - opened_epoch) / 3600, 1)
+| where resolution_hours > 0
+| stats avg(resolution_hours) as avg_resolution_hours,
+        median(resolution_hours) as median_resolution_hours,
+        count as resolved_count
+  by dv_priority
+| sort dv_priority
+
+# Category trending - Identify common incident categories
+index=main sourcetype="snow:incident"
+| stats count as incident_count by dv_category
+| sort -incident_count
+| head 15
+
+# =====================================
+# ALERTING QUERIES
+# =====================================
+
+# Critical incident alert - New critical incidents
+index=main sourcetype="snow:incident" dv_priority="1" dv_state="1"
+| eval alert_time = strftime(_time, "%Y-%m-%d %H:%M:%S")
+| table alert_time, dv_number, short_description, dv_assignment_group, dv_caller_id
+| sort -_time
+
+# Collection failure alert - No recent data collected
+| rest /services/data/inputs/all
+| search title="servicenow*"
+| eval last_collection = strftime(strptime(eai:acl.modtime, "%Y-%m-%dT%H:%M:%S"), "%Y-%m-%d %H:%M:%S")
+| eval minutes_since = round((now() - strptime(eai:acl.modtime, "%Y-%m-%dT%H:%M:%S")) / 60, 0)
+| where minutes_since > 10
+| table title, last_collection, minutes_since
+
+# High volume alert - Unusual spike in incidents
+index=main sourcetype="snow:incident"
+| bucket _time span=1h
+| stats count as hourly_count by _time
+| eventstats avg(hourly_count) as avg_hourly, stdev(hourly_count) as stdev_hourly
+| eval threshold = avg_hourly + (2 * stdev_hourly)
+| where hourly_count > threshold
+| table _time, hourly_count, threshold
+
+# =====================================
+# DASHBOARD QUERIES
+# =====================================
+
+# Executive dashboard - Key metrics summary
+index=main sourcetype="snow:incident"
+| stats count as total_incidents,
+        count(eval(dv_priority="1")) as critical_incidents,
+        count(eval(dv_state="1")) as new_incidents,
+        count(eval(dv_state="2")) as in_progress_incidents,
+        count(eval(dv_state="6" OR dv_state="7")) as resolved_incidents
+
+# Operational dashboard - Assignment group performance
+index=main sourcetype="snow:incident"
+| stats count as total_incidents,
+        count(eval(dv_state="1")) as new_incidents,
+        count(eval(dv_state="2")) as in_progress_incidents,
+        avg(eval(if(dv_state="6" OR dv_state="7", 
+                   (strptime(dv_resolved_at, "%Y-%m-%d %H:%M:%S") - 
+                    strptime(dv_opened_at, "%Y-%m-%d %H:%M:%S"))/3600, null()))) as avg_resolution_hours
+  by dv_assignment_group
+| sort -total_incidents
+
+# Trend dashboard - Daily incident patterns
+index=main sourcetype="snow:incident"
+| eval day_of_week = strftime(_time, "%A")
+| eval hour_of_day = strftime(_time, "%H")
+| stats count as incident_count by day_of_week, hour_of_day
+| sort day_of_week, hour_of_day
+
+# =====================================
+# DATA QUALITY QUERIES
+# =====================================
+
+# Field completeness report - Check for missing critical fields
+index=main sourcetype="snow:incident"
+| eval missing_description = if(isnull(short_description) OR short_description="", 1, 0),
+       missing_priority = if(isnull(dv_priority) OR dv_priority="", 1, 0),
+       missing_assignment = if(isnull(dv_assignment_group) OR dv_assignment_group="", 1, 0),
+       missing_caller = if(isnull(dv_caller_id) OR dv_caller_id="", 1, 0)
+| stats sum(missing_description) as missing_descriptions,
+        sum(missing_priority) as missing_priorities,
+        sum(missing_assignment) as missing_assignments,
+        sum(missing_caller) as missing_callers,
+        count as total_records
+| eval description_completeness = round((total_records - missing_descriptions) * 100 / total_records, 1),
+       priority_completeness = round((total_records - missing_priorities) * 100 / total_records, 1),
+       assignment_completeness = round((total_records - missing_assignments) * 100 / total_records, 1),
+       caller_completeness = round((total_records - missing_callers) * 100 / total_records, 1)
+
+# Duplicate detection - Find potential duplicate incidents
+index=main sourcetype="snow:incident"
+| stats count, values(dv_number) as incident_numbers by short_description
+| where count > 1
+| sort -count
