@@ -1,0 +1,29 @@
+# Credentials and sensitive data
+*.pem
+*.key
+passwords.txt
+credentials.json
+secrets/
+
+# Environment specific configs
+config/local/
+config/production/
+.env
+.env.local
+
+# Splunk specific
+*.log
+*.tmp
+local/
+metadata/local.meta
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
