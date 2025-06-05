@@ -1,0 +1,59 @@
+{
+  "servicenow_account": {
+    "account_name": "ServiceNow_Production",
+    "url": "https://your-instance.service-now.com",
+    "username": "splunk_api_user",
+    "password": "your_secure_password",
+    "auth_type": "Basic Authentication",
+    "record_count": 3000,
+    "timeout": 30
+  },
+  "data_input_incident": {
+    "input_name": "servicenow_incidents",
+    "account": "ServiceNow_Production",
+    "collection_interval": 300,
+    "table": "incident",
+    "time_field": "sys_updated_on",
+    "id_field": "sys_id",
+    "start_date": "2025-01-01",
+    "included_fields": [
+      "number",
+      "short_description", 
+      "description",
+      "state",
+      "priority",
+      "urgency",
+      "impact",
+      "assigned_to",
+      "assignment_group",
+      "caller_id",
+      "category",
+      "subcategory",
+      "opened_at",
+      "resolved_at",
+      "closed_at",
+      "sys_created_on",
+      "sys_updated_on"
+    ],
+    "filter_parameters": "active=true^state!=7",
+    "index": "servicenow",
+    "sourcetype": "snow:incident"
+  },
+  "data_input_problem": {
+    "input_name": "servicenow_problems",
+    "account": "ServiceNow_Production", 
+    "collection_interval": 600,
+    "table": "problem",
+    "time_field": "sys_updated_on",
+    "id_field": "sys_id",
+    "filter_parameters": "active=true",
+    "index": "servicenow",
+    "sourcetype": "snow:problem"
+  },
+  "monitoring_queries": {
+    "collection_health": "index=_internal source=*servicenow* \"Data collection completed\" | eval collection_time=strftime(_time, \"%Y-%m-%d %H:%M:%S\") | table collection_time, message | sort -_time",
+    "error_detection": "index=_internal source=*servicenow* (ERROR OR WARN) | table _time, message",
+    "data_volume": "index=servicenow | timechart span=1h count by sourcetype",
+    "field_validation": "index=servicenow sourcetype=\"snow:incident\" | table _time, dv_number, short_description, dv_state, dv_priority | head 10"
+  }
+}
